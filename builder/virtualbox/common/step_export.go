@@ -31,17 +31,41 @@ func (s *StepExport) Run(state multistep.StateBag) multistep.StepAction {
 	log.Println("1 second timeout to ensure VM is really shutdown")
 	time.Sleep(1 * time.Second)
 
-	// Clear out the Packer-created forwarding rule
+	// Clear out the Packer-created forwarding rule. We have to retry this
+	// a number of times because sometimes things are slower than expected.
+	// A brief sleep is added between retries to allow the machine to
+	// finish termination.
 	ui.Say("Preparing to export machine...")
 	ui.Message(fmt.Sprintf(
 		"Deleting forwarded port mapping for SSH (host port %d)",
 		state.Get("sshHostPort")))
 	command := []string{"modifyvm", vmName, "--natpf1", "delete", "packerssh"}
-	if err := driver.VBoxManage(command...); err != nil {
-		err := fmt.Errorf("Error deleting port forwarding rule: %s", err)
-		state.Put("error", err)
-		ui.Error(err.Error())
-		return multistep.ActionHalt
+	
+	// Setup the vars...should some of these be exposed?
+	var err error
+	var deleted bool
+	var retryCount int
+	retryMax := 5
+	timeout := (200 * time.Millisecond)
+
+	for retryCount < retryMax {
+
+		err = driver.VBoxManage(command...)
+
+		if err == nil {
+			deleted = true
+			break
+		}
+
+		retryCount++
+		time.Sleep(timeout)
+	}
+
+	if ! deleted {
+        	err = fmt.Errorf("Error deleting port forwarding rule: %s", err)
+                state.Put("error", err)
+                ui.Error(err.Error())
+                return multistep.ActionHalt
 	}
 
 	// Export the VM to an OVF
@@ -58,9 +82,9 @@ func (s *StepExport) Run(state multistep.StateBag) multistep.StepAction {
 
 	ui.Say("Exporting virtual machine...")
 	ui.Message(fmt.Sprintf("Executing: %s", strings.Join(command, " ")))
-	err := driver.VBoxManage(command...)
+	err = driver.VBoxManage(command...)
 	if err != nil {
-		err := fmt.Errorf("Error exporting virtual machine: %s", err)
+		err = fmt.Errorf("Error exporting virtual machine: %s", err)
 		state.Put("error", err)
 		ui.Error(err.Error())
 		return multistep.ActionHalt
